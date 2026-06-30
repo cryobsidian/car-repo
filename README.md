@@ -8,23 +8,23 @@ https://docs.google.com/document/d/1lLJxTWNvFdowMAlKwHoxLd9_VtGjU7h_2kNzVmCavCI/
 
 ## Goal
 
-Build a prototype where a Logitech G29/G26-style racing wheel and pedals control a generic RC car over Wi-Fi. The car carries an onboard microcontroller or small computer, and the driver views the car through a DJI FPV VR headset or similar FPV video system.
+Build a prototype where a Logitech G29/G26-style racing wheel and pedals control a generic RC car over Wi-Fi. The car carries an onboard ESP32-class controller, and the driver views the car through a DJI FPV VR headset or similar FPV video system.
 
 ## Current System Concept
 
-The planned control path is:
+The old client code uses this control path:
 
 ```text
 Logitech wheel and pedals
-  -> ground station laptop or host computer
-  -> Wi-Fi control packets
-  -> onboard ESP32 / Raspberry Pi / Raspberry Pi Pico W
+  -> ground station laptop running Python + pygame
+  -> HTTP requests over Wi-Fi
+  -> ESP32 WebServer endpoints
   -> PWM output
-  -> steering servo and ESC / motor driver
+  -> steering servo and TB6612FNG motor driver
   -> RC car movement
 ```
 
-FPV video is a separate high-bandwidth path. It must be tested alongside control traffic because video lag, dropped frames, and weak wireless signal directly affect the driving experience.
+FPV video is a separate path. It must still be tested with the control system, but the current client concern is no longer long range. The diorama is expected to be near the control booth and ground station, so short-range stability and repeatable demo setup are now the main priorities.
 
 ## Documentation
 
@@ -34,21 +34,24 @@ FPV video is a separate high-bandwidth path. It must be tested alongside control
 - [Networking and Latency Risks](docs/networking-and-latency.md)
 - [Testing Plan](docs/testing-plan.md)
 - [Open Questions](docs/open-questions.md)
+- [Old Code Analysis](docs/old-code-analysis.md)
 
 ## Key Risks
 
-- Wireless range can degrade as the car moves farther from the controller.
-- Walls and obstacles can block or weaken the signal.
-- Packet loss can disturb control input.
+- Demo stability is the current primary risk. The old system reportedly worked for one sponsor demo, then failed for a later sponsor demo.
+- Startup order, Wi-Fi connection state, joystick detection, and device IP assumptions must be made repeatable.
+- The old code uses HTTP requests for control and has no onboard failsafe timeout, so the car can keep its last motor state if the ground station stops sending commands.
+- Packet loss can disturb control input, especially because steering and throttle are sent as separate requests.
 - FPV video bandwidth can create lag, freezing, or frame drops.
-- The onboard board choice must match the code target. The planning doc mentions ESP32, Raspberry Pi, Raspberry Pi Pico W, and Raspberry Pi in different places.
+- The onboard board choice must match the code target. The old code points most concretely to ESP32 Arduino firmware.
+- Range is now a secondary concern because the diorama is expected to be near the control booth and ground station.
 
 ## Next Implementation Step
 
-Choose the exact onboard board and ground station setup, then build the smallest proof of concept:
+Choose one canonical version of the old code, then build a stable proof of concept:
 
 1. Read steering and pedal values on the host computer.
-2. Send normalized steering and throttle values over UDP.
-3. Receive the values on the onboard board.
-4. Output PWM to a servo and ESC or motor driver.
-5. Measure control latency and maximum usable range.
+2. Make startup repeatable: fixed Wi-Fi mode, known IP, joystick detection, and a visible health/status check.
+3. Send normalized steering and throttle values as one coherent control update.
+4. Add an onboard failsafe that stops the motor when commands stop arriving.
+5. Measure stability across repeated setup cycles before optimizing range.

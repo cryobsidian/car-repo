@@ -8,18 +8,19 @@
 | input device         |                   | laptop / host        |
 +----------------------+                   +----------+-----------+
                                                       |
-                                                      | Wi-Fi UDP packets
+                                                      | Wi-Fi control traffic
                                                       v
                                            +----------+-----------+
-                                           | Onboard controller  |
-                                           | ESP32 / Pi / Pico W |
+                                           | ESP32 onboard       |
+                                           | controller          |
                                            +----------+-----------+
                                                       |
-                                                      | PWM
+                                                      | PWM / GPIO
                              +------------------------+------------------------+
                              v                                                 v
                     +--------+---------+                              +--------+-------+
-                    | Steering servo   |                              | ESC / driver   |
+                    | Steering servo   |                              | TB6612FNG /    |
+                    |                  |                              | motor driver   |
                     +------------------+                              +----------------+
 ```
 
@@ -29,76 +30,77 @@ The FPV video system runs alongside this control path:
 Camera / FPV transmitter on car -> DJI FPV headset / receiver
 ```
 
+## Old Code Architecture
+
+The copied client code appears to use this architecture:
+
+```text
+Logitech wheel/pedals
+  -> Python ground-station script using pygame
+  -> HTTP GET requests with requests
+  -> ESP32 WebServer endpoints
+  -> TB6612FNG motor driver and steering servo
+```
+
+Relevant files:
+
+- `RCcar/mainapp.py`: joystick axis print/debug script.
+- `RCcar/mainapp_V1.py`: early HTTP control script; contains a variable-name bug where `angle` is calculated but `steer_angle` is used.
+- `RCcar/mainapp_V2.py`: clearer axis constants, steering/throttle mapping, and HTTP helper functions.
+- `RCcar/mainapp_V3.py`: latest-looking Python control script, using ESP32 IP `192.168.4.2`, deadzone handling, and separate `/throttle` and `/steer` requests.
+- `RCcar/motor_test.py` and top-level `motor_test.py`: throttle-only test scripts.
+- `RCcar/sterling.ino`: ESP32 steering-only web server.
+- `RCcar/motor.ino`: combined ESP32 motor and steering web server targeting a TB6612FNG motor driver and a servo.
+
 ## Input Tier
 
-The Logitech wheel does not directly control the car over Wi-Fi. It needs a host device, usually a laptop or a second Raspberry Pi, to read input over USB.
+The Logitech wheel does not directly control the car over Wi-Fi. It needs a host device, usually a laptop, to read input over USB.
 
 Expected host responsibilities:
 
 - Detect the wheel and pedals.
 - Poll steering and pedal values continuously.
 - Normalize values into a small control payload.
+- Verify axis mapping before enabling motor output.
 - Send the newest payload to the car at a fixed update rate.
 
-Common Python libraries for input polling include `pygame` and `inputs`.
+The old code uses `pygame` for input polling.
 
 ## Transmission Tier
 
-The control link should use lightweight packets over Wi-Fi.
+The existing code uses HTTP GET requests. That is acceptable for early testing, but it creates avoidable demo risk because steering and throttle are sent as separate transactions and each request depends on the ESP32 web server responding quickly.
 
-Recommended first protocol: UDP.
+Recommended target protocol for a stable rebuild: one repeated control update message containing steering, throttle, brake/reverse, timestamp or sequence number, and optional mode flags.
 
-Reason:
-
-- UDP avoids waiting for retransmission of old data.
-- For live control, the newest steering and throttle value is more useful than a delayed old value.
-- Lost packets are acceptable if packets are sent frequently and the onboard controller has a timeout failsafe.
-
-Example payload:
-
-```json
-{
-  "steering": 0.45,
-  "throttle": 0.80,
-  "brake": 0.00
-}
-```
+UDP is a good candidate for this control update.
 
 ## Onboard Control Tier
 
-The onboard controller listens for control packets, extracts values, and maps them to hardware outputs.
+The onboard ESP32 listens for control commands, extracts values, and maps them to hardware outputs.
 
 Expected onboard responsibilities:
 
-- Connect to the control Wi-Fi network.
-- Listen on a fixed UDP port.
-- Parse steering, throttle, and brake values.
+- Connect to the control Wi-Fi network or run a dedicated access point.
+- Expose a health/status endpoint before control starts.
+- Parse steering, throttle, and brake/reverse values.
 - Clamp values to safe limits.
 - Convert normalized values to PWM commands.
-- Stop or neutralize output if packets stop arriving.
+- Stop or neutralize output if commands stop arriving.
+- Log command age and failsafe state.
 
 ## Actuation Tier
 
-Standard RC-style components generally use PWM signals.
+The old combined firmware uses:
 
-Typical RC PWM range:
+- Steering servo on pin 13.
+- TB6612FNG motor driver pins: `PWMA=25`, `AIN1=26`, `AIN2=27`, `STBY=14`.
+- 8-bit PWM for motor speed from 0 to 255.
+- Steering angle clamp from 60 to 120 degrees.
 
-- 1.0 ms: full left or reverse
-- 1.5 ms: center or neutral
-- 2.0 ms: full right or forward
-
-The steering servo receives a PWM signal for wheel angle.
-
-The ESC or motor driver receives throttle/brake commands. The onboard controller must not drive high motor current directly from GPIO pins.
+The onboard controller must not drive high motor current directly from GPIO pins.
 
 ## Board Choice
 
-The planning doc mentions multiple possible boards:
+The old code points most concretely to ESP32 Arduino firmware because `motor.ino` and `sterling.ino` include `WiFi.h`, `WebServer.h`, and `ESP32Servo.h`.
 
-- ESP32
-- Raspberry Pi
-- Raspberry Pi Pico W
-
-The code direction currently sounds closest to MicroPython on ESP32 or Raspberry Pi Pico W because of references to `network`, `machine`, and `duty_u16`.
-
-The team should choose one target before implementation, because the GPIO, PWM, Wi-Fi, and library APIs differ.
+Planning notes mention Raspberry Pi and Raspberry Pi Pico W, but switching boards would change GPIO, PWM, Wi-Fi, deployment, and dependency assumptions. The fastest stabilization path is likely to keep ESP32 and improve firmware/ground-station reliability.

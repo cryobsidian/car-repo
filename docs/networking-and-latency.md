@@ -2,17 +2,26 @@
 
 ## Main Risk
 
-The team planning doc identifies distance and obstacles as primary concerns. As the car moves farther away, the Wi-Fi connection can weaken, packet loss can increase, and control can become delayed or unstable.
+The current client concern is stability, not long range. The system reportedly worked once for a sponsor and failed later for a different sponsor. Because the diorama will be near the control booth and ground station, the first networking goal is repeatable short-range setup.
+
+The old code has several stability-sensitive assumptions:
+
+- The ESP32 IP address is hard-coded in Python.
+- Different Python versions use different ESP32 IPs: `192.168.50.111` and `192.168.4.2`.
+- The ESP32 sketch connects to a fixed Wi-Fi SSID and password.
+- The host sends steering and throttle as separate HTTP GET requests.
+- Some Python scripts silently ignore request failures.
+- The ESP32 does not stop the motor if commands stop arriving.
 
 ## Failure Chain
 
 ```text
-More distance or blocked signal
-  -> weaker Wi-Fi connection
-  -> more packet loss
-  -> delayed or missing control packets
-  -> disturbed steering/throttle response
-  -> car becomes difficult or impossible to control
+Unstable demo setup
+  -> wrong Wi-Fi network, changed IP, missing joystick, or stale process
+  -> ground station cannot reliably reach ESP32
+  -> steering/throttle commands are delayed or dropped
+  -> ESP32 keeps last known output or receives partial updates
+  -> sponsor demo appears to fail randomly
 ```
 
 ## Video Bandwidth
@@ -21,9 +30,20 @@ FPV video can require significant bandwidth. A stream such as 1080p at 30 FPS ca
 
 Even if the control link is stable, the user experience can still fail if FPV video is delayed or unreliable.
 
+## Existing HTTP Control Protocol
+
+The old code uses HTTP GET endpoints:
+
+- `/steer?value=<angle>`
+- `/throttle?value=<drive>`
+- `/stop`
+- `/status`
+
+This is useful for manual testing, but fragile for demos. Steering and throttle can arrive separately, short request timeouts can drop commands, and silent exception handling can hide the real failure.
+
 ## Recommended Control Protocol
 
-Use UDP for the first prototype.
+For the next stable prototype, prefer a single repeated control packet rather than separate steering and throttle requests. UDP is a good fit if the onboard code includes a timeout failsafe.
 
 UDP is appropriate because:
 
@@ -33,35 +53,43 @@ UDP is appropriate because:
 
 ## Required Failsafe Behavior
 
-The onboard controller should track the time since the last valid packet.
+The onboard controller should track the time since the last valid command.
 
-If no valid packet arrives within the timeout:
+If no valid command arrives within the timeout:
 
 - Set throttle to neutral or zero.
 - Center steering or hold the last steering position, depending on test safety.
 - Ignore stale packets.
-- Optionally blink an LED or send debug status.
+- Report failsafe state through `/status` or serial logs.
 
 Suggested first timeout: 250 ms.
+
+This is the highest-priority firmware change. Without it, the motor driver can keep the last commanded throttle if the Python process freezes, the joystick disconnects, Wi-Fi drops, or the sponsor-demo laptop changes networks.
 
 ## Measurements To Capture
 
 During tests, record:
 
-- Distance from ground station.
-- Line-of-sight or blocked by walls/obstacles.
+- Startup attempt number.
+- Wi-Fi network name and ESP32 IP address.
+- Whether the ground station can reach `/status`.
+- Whether the joystick is detected and which axis mapping is active.
 - Packet send rate.
-- Packet loss rate if available.
+- Request failure rate or packet loss rate.
 - Control latency.
 - FPV latency or visible lag.
 - Whether the car remains controllable.
-- Whether Wi-Fi remains connected after the failure distance.
+- Whether the ESP32 failsafe triggers correctly when the host stops.
 
 ## Diagnostic Question
 
-When the system fails around a distance limit, determine whether the onboard device is still connected to Wi-Fi.
+When the system fails during demo setup, determine the exact failing layer.
 
-This separates two different problems:
+This separates different problems:
 
-- Wi-Fi disconnected entirely.
-- Wi-Fi still connected, but packet loss or latency is too high.
+- Joystick not detected or wrong axis mapping.
+- Ground station on wrong Wi-Fi network.
+- ESP32 connected but using a different IP.
+- HTTP requests timing out or being dropped.
+- ESP32 receiving commands but motor/servo output not responding.
+- FPV issue unrelated to control.
